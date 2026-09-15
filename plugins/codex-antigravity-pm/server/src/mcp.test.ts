@@ -32,6 +32,7 @@ test("MCP exposes role-specific tools", async () => {
     assert(manager.includes("project_init"));
     assert(manager.includes("project_run"));
     assert(manager.includes("project_list"));
+    assert(manager.includes("project_wait"));
     assert(manager.includes("health_check"));
     assert(manager.includes("session_list"));
     assert(manager.includes("project_worker_start"));
@@ -44,8 +45,42 @@ test("MCP exposes role-specific tools", async () => {
     assert(worker.includes("task_claim"));
     assert(worker.includes("task_submit"));
     assert(worker.includes("task_progress"));
+    assert(worker.includes("project_wait"));
     assert(!worker.includes("project_init"));
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("project_wait returns when a new ledger event arrives", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pm-mcp-wait-"));
+  const dbPath = join(dir, "test.db");
+  const setupStore = new CoordinatorStore(dbPath);
+  const project = setupStore.createProject({ name: "Wait", outcome: "Ship", definitionOfDone: ["Done"] }, "codex") as any;
+  setupStore.createTask({ projectId: project.id, title: "Initial", objective: "O", scopeIn: ["src"], acceptanceCriteria: ["A"], verificationCommands: ["test"] }, "codex");
+  const afterEventId = ((setupStore.events(project.id, 1) as any[])[0]).id;
+  setupStore.close();
+  const client = new Client({ name: "wait-test", version: "1.0.0" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [serverPath],
+    env: { ...cleanEnv, PM_ROLE: "manager", PM_ACTOR: "codex", PM_DB_PATH: dbPath }
+  });
+  try {
+    await client.connect(transport);
+    const timer = setTimeout(() => {
+      const eventStore = new CoordinatorStore(dbPath);
+      try {
+        eventStore.createTask({ projectId: project.id, title: "T", objective: "O", scopeIn: ["src"], acceptanceCriteria: ["A"], verificationCommands: ["test"] }, "codex");
+      } finally { eventStore.close(); }
+    }, 100);
+    const result = await client.callTool({ name: "project_wait", arguments: { projectId: project.id, afterEventId, waitSeconds: 2 } }) as any;
+    clearTimeout(timer);
+    const payload = JSON.parse(result.content[0].text);
+    assert.equal(payload.reason, "event");
+    assert(payload.status.lastEvent.id > afterEventId);
+  } finally {
+    await client.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -1,5 +1,6 @@
 export const DEFAULT_MAX_ATTEMPTS = 1;
 export const DEFAULT_TURN_TIMEOUT_MINUTES = 120;
+export const ANTIGRAVITY_MODEL = "gemini-3.8-flash-high";
 
 export function maxAttempts(value = process.env.PM_MAX_ATTEMPTS): number {
   const parsed = Number(value ?? DEFAULT_MAX_ATTEMPTS);
@@ -17,4 +18,9 @@ export function retryDelaySeconds(attempt: number, baseSeconds: number): number 
 export function turnTimeoutMinutes(value = process.env.PM_TURN_TIMEOUT_MINUTES): number {
   const parsed = Number(value ?? DEFAULT_TURN_TIMEOUT_MINUTES);
   return Number.isInteger(parsed) && parsed >= 10 && parsed <= 480 ? parsed : DEFAULT_TURN_TIMEOUT_MINUTES;
+}
+
+export function antigravityArgs(prompt: string, timeoutMinutes: number): string[] {
+  return ["--mode", "accept-edits", "--sandbox", "--dangerously-skip-permissions", "--model", ANTIGRAVITY_MODEL,
+    "--effort", "high", "--print-timeout", `${timeoutMinutes}m`, "--output-format", "text", "--print", prompt];
 }

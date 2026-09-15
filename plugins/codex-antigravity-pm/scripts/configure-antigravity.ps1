@@ -37,7 +37,8 @@ $entry = [pscustomobject]@{
 $config.mcpServers | Add-Member -Force -NotePropertyName "codex-antigravity-pm" -NotePropertyValue $entry
 $tempConfigPath = "$configPath.tmp-$([guid]::NewGuid().ToString('N'))"
 try {
-  $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $tempConfigPath -Encoding utf8
+  $json = $config | ConvertTo-Json -Depth 20
+  [IO.File]::WriteAllText($tempConfigPath, $json, [Text.UTF8Encoding]::new($false))
   Move-Item -Force -LiteralPath $tempConfigPath -Destination $configPath
 } finally {
   if (Test-Path -LiteralPath $tempConfigPath) { Remove-Item -Force -LiteralPath $tempConfigPath }

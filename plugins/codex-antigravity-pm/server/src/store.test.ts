@@ -142,3 +142,86 @@ test("blocked task releases its worker claim and heartbeat", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("task assignment is enforced when listing and claiming work", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pm-mcp-"));
+  const store = new CoordinatorStore(join(dir, "test.db"));
+  try {
+    const project = store.createProject({ name: "Demo", outcome: "Ship", definitionOfDone: ["Done"] }, "codex") as any;
+    const task = store.createTask({ projectId: project.id, title: "T", objective: "O", scopeIn: ["src"], acceptanceCriteria: ["A"], verificationCommands: ["test"], assignee: "worker-a" }, "codex") as any;
+    assert.deepEqual(store.nextTasks(project.id, 5, "worker-b"), []);
+    assert.throws(() => store.claimTask(task.id, "worker-b"), /assigned to worker-a/);
+    assert.equal((store.claimTask(task.id, "worker-a") as any).claimedBy, "worker-a");
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scope validation rejects traversal and Windows path bypasses", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pm-mcp-"));
+  const store = new CoordinatorStore(join(dir, "test.db"));
+  try {
+    const project = store.createProject({ name: "Demo", outcome: "Ship", definitionOfDone: ["Done"] }, "codex") as any;
+    const create = (scopeIn: string[]) => store.createTask({ projectId: project.id, title: "T", objective: "O", scopeIn, acceptanceCriteria: ["A"], verificationCommands: ["test"] }, "codex");
+    assert.throws(() => create(["../src"]), /safe repository-relative path/);
+    assert.throws(() => create(["C:/src"]), /safe repository-relative path/);
+    assert.throws(() => create(["src/file:stream"]), /safe repository-relative path/);
+    const task = store.createTask({ projectId: project.id, title: "Case", objective: "O", scopeIn: ["SRC/**"], scopeOut: ["src/secret"], acceptanceCriteria: ["A"], verificationCommands: ["test"] }, "codex") as any;
+    store.claimTask(task.id, "antigravity");
+    const submission = (file: string) => ({ summary: "done", changedFiles: [file], tests: [{ command: "test", result: "passed" as const }], acceptanceResults: [{ criterion: "A", result: "passed" as const, evidence: "ok" }] });
+    assert.throws(() => store.submitTask(task.id, submission("../src/a.ts"), "antigravity"), /safe repository-relative path/);
+    if (process.platform === "win32") assert.throws(() => store.submitTask(task.id, submission("Src/Secret/a.ts"), "antigravity"), /out of scope/);
+    assert.equal((store.submitTask(task.id, submission("src/App.ts"), "antigravity") as any).status, "submitted");
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("approval requires passed verification and acceptance evidence", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pm-mcp-"));
+  const store = new CoordinatorStore(join(dir, "test.db"));
+  try {
+    const project = store.createProject({ name: "Demo", outcome: "Ship", definitionOfDone: ["Done"] }, "codex") as any;
+    const create = (title: string) => store.createTask({ projectId: project.id, title, objective: "O", scopeIn: ["src"], acceptanceCriteria: ["A"], verificationCommands: ["test"] }, "codex") as any;
+    const failedTest = create("Failed test");
+    store.claimTask(failedTest.id, "antigravity");
+    store.submitTask(failedTest.id, { summary: "done", changedFiles: ["src/a.ts"], tests: [{ command: "test", result: "failed" }], acceptanceResults: [{ criterion: "A", result: "passed", evidence: "ok" }] }, "antigravity");
+    assert.throws(() => store.reviewTask(failedTest.id, "approve", [], [], "codex"), /verification not passed/);
+    const failedCriterion = create("Failed criterion");
+    store.claimTask(failedCriterion.id, "antigravity");
+    store.submitTask(failedCriterion.id, { summary: "done", changedFiles: ["src/b.ts"], tests: [{ command: "test", result: "passed" }], acceptanceResults: [{ criterion: "A", result: "failed", evidence: "not met" }] }, "antigravity");
+    assert.throws(() => store.reviewTask(failedCriterion.id, "approve", [], [], "codex"), /acceptance criteria not passed/);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("project status exposes strict terminal and progress states", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pm-mcp-"));
+  const store = new CoordinatorStore(join(dir, "test.db"));
+  try {
+    const project = store.createProject({ name: "Demo", outcome: "Ship", definitionOfDone: ["Done"] }, "codex") as any;
+    assert.equal((store.status(project.id) as any).state, "needs_attention");
+    const task = store.createTask({ projectId: project.id, title: "T", objective: "O", scopeIn: ["src"], acceptanceCriteria: ["A"], verificationCommands: ["test"] }, "codex") as any;
+    assert.equal((store.status(project.id) as any).state, "ready");
+    store.claimTask(task.id, "antigravity");
+    const session = store.startSession("antigravity", "worker", "antigravity") as any;
+    store.heartbeatSession(session.id, { projectId: project.id, taskId: task.id, status: "busy" });
+    assert.equal((store.status(project.id) as any).state, "running");
+    store.submitTask(task.id, { summary: "done", changedFiles: ["src/a.ts"], tests: [{ command: "test", result: "passed" }], acceptanceResults: [{ criterion: "A", result: "passed", evidence: "ok" }] }, "antigravity");
+    assert.equal((store.status(project.id) as any).state, "reviewing");
+    store.reviewTask(task.id, "approve", [], [], "codex");
+    const complete = store.status(project.id) as any;
+    assert.equal(complete.state, "completed");
+    assert.equal(complete.done, true);
+    assert.equal(complete.approvedPercent, 100);
+    store.recordProjectEvent(project.id, "runner", "runner_failed", { error: "late shutdown error" });
+    assert.equal((store.status(project.id) as any).state, "completed");
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

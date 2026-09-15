@@ -1,4 +1,4 @@
 interface:
   display_name: "Manage Antigravity Project"
   short_description: "Plan tasks and review Antigravity outputs"
-  default_prompt: "Plan this project, delegate actionable tasks, and review every submission."
+  default_prompt: "Plan this project, delegate scoped tasks, monitor with project_wait, review every submission, and continue until completed or needs_attention."

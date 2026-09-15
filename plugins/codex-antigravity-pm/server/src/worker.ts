@@ -3,7 +3,7 @@ import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { CoordinatorStore } from "./store.js";
-import { maxAttempts, retryDelaySeconds, shouldRetry, turnTimeoutMinutes } from "./worker-policy.js";
+import { antigravityArgs, maxAttempts, retryDelaySeconds, shouldRetry, turnTimeoutMinutes } from "./worker-policy.js";
 
 const children = new Set<ChildProcess>();
 const exec = (file: string, fileArgs: string[], options: ExecFileOptionsWithStringEncoding) =>
@@ -30,6 +30,7 @@ const projectId: string = projectArg;
 const repositoryPath: string = repositoryArg;
 const store = new CoordinatorStore(dbPath);
 let stopped = false;
+const normalizePath = (path: string) => process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
 const write = (message: string) => {
   const line = `[${new Date().toISOString()}] ${message}`;
   console.log(line);
@@ -39,7 +40,9 @@ const delay = (seconds: number) => new Promise(resolveDelay => setTimeout(resolv
 const attempts = new Map<string, number>();
 
 function taskIds(status: "claimed" | "submitted"): string[] {
-  return (store.listTasks(projectId, [status]) as Array<Record<string, unknown>>).map(task => String(task.id));
+  return (store.listTasks(projectId, [status]) as Array<Record<string, unknown>>)
+    .filter(task => status !== "claimed" || task.claimedBy === "antigravity")
+    .map(task => String(task.id));
 }
 
 async function runBounded(kind: "task" | "review", id: string, run: () => Promise<void>): Promise<void> {
@@ -68,6 +71,7 @@ async function runBounded(kind: "task" | "review", id: string, run: () => Promis
         }
       } else {
         // A submitted task cannot be blocked by the worker; stop the runner instead of re-reviewing forever.
+        store.recordProjectEvent(projectId, "runner", "runner_failed", { kind, id, attempts: attempt, error: error instanceof Error ? error.message : String(error) });
         write(`${kind} ${id} stopped after ${attempt} attempt(s); inspect the review and restart manually`);
         stopped = true;
       }
@@ -81,9 +85,9 @@ async function runBounded(kind: "task" | "review", id: string, run: () => Promis
 }
 
 async function runTask(): Promise<void> {
-  const prompt = `Use the codex-antigravity-pm MCP for project ${projectId}. If a task is already claimed by antigravity, continue that exact task; otherwise call task_next and claim exactly one highest-priority task. Read the full specification before editing. You have full authority inside scopeIn, but may not modify scopeOut or any file outside scopeIn. Do not create tasks, change task scope, install dependencies, or perform unrelated refactors. Call task_progress at meaningful milestones. Run every verification command. Finish by calling task_submit with changed files, tests, risks, and evidence for every acceptance criterion. If work cannot continue, call task_block with the exact reason and needs. Do not start a second task in this run.`;
+  const prompt = `Use the codex-antigravity-pm MCP for project ${projectId}. The only repository is ${repositoryPath}. If a task is already claimed by antigravity, continue that exact task; otherwise call task_next and claim exactly one highest-priority task. Read the full specification before editing. Call task_progress at 0 percent before edits, then after discovery, implementation, and verification. You may modify only repository-relative files matched by scopeIn. Never modify scopeOut, .git, git config, sibling directories, user/global configuration, credentials, secrets, or generated caches unless the task explicitly includes them. Do not follow symlinks outside the repository. Do not create tasks, change task scope, install dependencies, commit, push, or perform unrelated refactors. Run every verification command exactly as specified. Finish by calling task_submit with changed files, tests, risks, and one evidence result for every acceptance criterion. If work cannot continue, call task_block with the exact reason and needs. Do not start a second task in this run.`;
   write("Starting Antigravity task run");
-  const result = await exec("agy", ["--mode", "accept-edits", "--dangerously-skip-permissions", "--model", "gemini-3.8-flash-high", "--effort", "high", "--print-timeout", `${turnTimeout}m`, "--output-format", "text", "--print", prompt], {
+  const result = await exec("agy", antigravityArgs(prompt, turnTimeout), {
     cwd: repositoryPath, windowsHide: true, timeout: (turnTimeout * 60 + 1) * 1000, maxBuffer: 10 * 1024 * 1024, encoding: "utf8"
   });
   if (result.stdout.trim()) write(result.stdout.trim());
@@ -101,20 +105,33 @@ async function runReview(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  store.getProject(projectId);
+  const project = store.getProject(projectId) as { repositoryPath?: string | null };
+  if (project.repositoryPath && normalizePath(project.repositoryPath) !== normalizePath(repositoryPath)) {
+    throw new Error(`Runner repository does not match project repositoryPath: ${project.repositoryPath}`);
+  }
+  store.recordProjectEvent(projectId, "runner", "runner_started", { repositoryPath: resolve(repositoryPath) });
   write(`Worker active for ${projectId} at ${repositoryPath}`);
   while (!stopped) {
-    const status = store.status(projectId) as { total: number; counts: Record<string, number> };
-    if (status.total > 0 && (status.counts.approved ?? 0) === status.total) { write("Project complete; worker stopped"); break; }
+    const status = store.status(projectId) as { state: string; total: number; counts: Record<string, number> };
+    if (status.state === "completed") {
+      store.recordProjectEvent(projectId, "runner", "runner_completed", {});
+      write("Project complete; worker stopped");
+      break;
+    }
+    if (status.state === "needs_attention") {
+      store.recordProjectEvent(projectId, "runner", "runner_needs_attention", {});
+      write("Project needs attention; worker stopped");
+      break;
+    }
     if ((status.counts.submitted ?? 0) > 0) {
       const id = taskIds("submitted")[0];
       if (id) await runBounded("review", id, runReview);
       else await delay(1);
       continue;
     }
-    if ((status.counts.claimed ?? 0) === 0 && store.nextTasks(projectId, 1).length === 0) { await delay(pollSeconds); continue; }
-    const id = taskIds("claimed")[0] ?? (store.nextTasks(projectId, 1)[0] as Record<string, unknown> | undefined)?.id;
+    const id = taskIds("claimed")[0] ?? (store.nextTasks(projectId, 1, "antigravity")[0] as Record<string, unknown> | undefined)?.id;
     if (id) await runBounded("task", String(id), runTask);
+    else await delay(pollSeconds);
   }
   store.close();
 }
@@ -124,4 +141,10 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {
   for (const child of children) child.kill();
   write(`Received ${signal}; stopped ${children.size} child process(es)`);
 });
-void main().catch(error => { write(error instanceof Error ? error.stack ?? error.message : String(error)); store.close(); process.exitCode = 1; });
+void main().catch(error => {
+  const message = error instanceof Error ? error.stack ?? error.message : String(error);
+  try { store.recordProjectEvent(projectId, "runner", "runner_failed", { error: message }); } catch { }
+  write(message);
+  store.close();
+  process.exitCode = 1;
+});

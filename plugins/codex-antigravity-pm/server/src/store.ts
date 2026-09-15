@@ -44,14 +44,26 @@ const parse = <T>(value: unknown, fallback: T): T => {
   if (typeof value !== "string") return fallback;
   try { return JSON.parse(value) as T; } catch { return fallback; }
 };
-const cleanPath = (value: string) => value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+const cleanPath = (value: string) => {
+  const path = value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  return process.platform === "win32" ? path.toLowerCase() : path;
+};
+const validateRepositoryPath = (value: string, label: string, allowWildcard: boolean): void => {
+  const path = value.replace(/\\/g, "/");
+  const segments = path.replace(/\/$/, "").split("/");
+  if (!path || value !== value.trim() || path.includes("\0") || path.includes(":") || path.includes("?") || path.startsWith("/")
+    || /^[a-z]:\//i.test(path) || segments.some(segment => !segment || segment === ".." || (segment === "." && path !== "."))
+    || (!allowWildcard && path.includes("*"))) {
+    throw new Error(`${label} must be a safe repository-relative path: ${value}`);
+  }
+};
 const matchesPathRule = (file: string, rule: string): boolean => {
   const target = cleanPath(file);
   const pattern = cleanPath(rule);
   if (!pattern || pattern === "." || pattern === "*") return true;
   if (pattern.endsWith("/**")) return target === pattern.slice(0, -3) || target.startsWith(`${pattern.slice(0, -3)}/`);
   if (pattern.includes("*")) {
-    const regex = new RegExp(`^${pattern.split("*").map(part => part.replace(/[.+?^${}()|[\\]\\]/g, "\\$&")).join(".*")}(?:/.*)?$`);
+    const regex = new RegExp(`^${pattern.split("*").map(part => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}(?:/.*)?$`);
     return regex.test(target);
   }
   return target === pattern || target.startsWith(`${pattern}/`);
@@ -195,6 +207,8 @@ export class CoordinatorStore {
 
   createTask(input: TaskInput, actor: string): unknown {
     this.getProject(input.projectId);
+    for (const rule of input.scopeIn) validateRepositoryPath(rule, "scopeIn rule", true);
+    for (const rule of input.scopeOut ?? []) validateRepositoryPath(rule, "scopeOut rule", true);
     const deps = input.dependencies ?? [];
     this.validateDependencies(input.projectId, deps);
     const id = `tsk_${randomUUID().slice(0, 8)}`;
@@ -215,6 +229,8 @@ export class CoordinatorStore {
     if (!["ready", "changes_requested", "blocked"].includes(String(task.status))) throw new Error(`Cannot edit a task in status ${task.status}`);
     const dependencies = patch.dependencies ?? parse<string[]>(task.dependencies_json, []);
     this.validateDependencies(String(task.project_id), dependencies, taskId);
+    for (const rule of patch.scopeIn ?? []) validateRepositoryPath(rule, "scopeIn rule", true);
+    for (const rule of patch.scopeOut ?? []) validateRepositoryPath(rule, "scopeOut rule", true);
     const fields: Record<string, unknown> = {
       title: patch.title ?? task.title, objective: patch.objective ?? task.objective,
       context: patch.context ?? task.context, scope_in_json: patch.scopeIn ? json(patch.scopeIn) : task.scope_in_json,
@@ -238,11 +254,12 @@ export class CoordinatorStore {
   claimTask(taskId: string, actor: string): unknown {
     const task = this.rawTask(taskId);
     if (!["ready", "changes_requested"].includes(String(task.status))) throw new Error(`Task is not claimable: ${task.status}`);
+    if (task.assignee !== actor) throw new Error(`Task is assigned to ${task.assignee}, not ${actor}`);
     const dependencies = parse<string[]>(task.dependencies_json, []);
     for (const dep of dependencies) if (this.rawTask(dep).status !== "approved") throw new Error(`Dependency ${dep} is not approved`);
     const result = this.db.prepare(`UPDATE tasks SET status='claimed',claimed_by=?,progress_percent=0,
-      progress_note='',heartbeat_at=?,updated_at=? WHERE id=? AND status IN ('ready','changes_requested')`)
-      .run(actor, now(), now(), taskId);
+      progress_note='',heartbeat_at=?,updated_at=? WHERE id=? AND assignee=? AND status IN ('ready','changes_requested')`)
+      .run(actor, now(), now(), taskId, actor);
     if (result.changes !== 1) throw new Error("Task was claimed by another worker");
     this.event(String(task.project_id), taskId, actor, "task_claimed", {});
     return this.getTask(taskId);
@@ -282,13 +299,19 @@ export class CoordinatorStore {
     const scopeIn = parse<string[]>(task.scope_in_json, []);
     const scopeOut = parse<string[]>(task.scope_out_json, []);
     for (const file of submission.changedFiles ?? []) {
+      validateRepositoryPath(file, "Changed file", false);
       if (scopeOut.some(rule => matchesPathRule(file, rule))) throw new Error(`Changed file is explicitly out of scope: ${file}`);
       if (!scopeIn.some(rule => matchesPathRule(file, rule))) throw new Error(`Changed file is outside scopeIn: ${file}`);
     }
     const criteria = parse<string[]>(task.acceptance_json, []);
     const submittedCriteria = new Set(submission.acceptanceResults.map(item => item.criterion));
+    if (submittedCriteria.size !== submission.acceptanceResults.length) throw new Error("Acceptance evidence contains duplicate criteria");
     const missing = criteria.filter(item => !submittedCriteria.has(item));
     if (missing.length) throw new Error(`Missing acceptance evidence for: ${missing.join("; ")}`);
+    const unknown = submission.acceptanceResults.filter(item => !criteria.includes(item.criterion)).map(item => item.criterion);
+    if (unknown.length) throw new Error(`Unknown acceptance evidence for: ${unknown.join("; ")}`);
+    const submittedCommands = new Set(submission.tests.map(item => item.command));
+    if (submittedCommands.size !== submission.tests.length) throw new Error("Verification evidence contains duplicate commands");
     this.db.prepare(`UPDATE tasks SET status='submitted',submission_json=?,revision=revision+1,
       progress_percent=100,progress_note='Submitted for review',heartbeat_at=?,updated_at=? WHERE id=?`)
       .run(json(submission), now(), now(), taskId);
@@ -321,6 +344,17 @@ export class CoordinatorStore {
     const task = this.rawTask(taskId);
     if (task.status !== "submitted") throw new Error(`Only submitted tasks can be reviewed; current status: ${task.status}`);
     if (decision === "request_changes" && findings.length === 0) throw new Error("Changes requested requires at least one finding");
+    if (decision === "approve") {
+      const submission = parse<SubmissionInput | null>(task.submission_json, null);
+      if (!submission) throw new Error("Cannot approve a task without a submission");
+      const requiredCommands = parse<string[]>(task.verification_json, []);
+      const tests = new Map(submission.tests.map(test => [test.command, test.result]));
+      const missingOrFailed = requiredCommands.filter(command => tests.get(command) !== "passed");
+      if (missingOrFailed.length) throw new Error(`Cannot approve; verification not passed: ${missingOrFailed.join("; ")}`);
+      const results = new Map(submission.acceptanceResults.map(result => [result.criterion, result.result]));
+      const failedCriteria = parse<string[]>(task.acceptance_json, []).filter(criterion => results.get(criterion) !== "passed");
+      if (failedCriteria.length) throw new Error(`Cannot approve; acceptance criteria not passed: ${failedCriteria.join("; ")}`);
+    }
     const status = decision === "approve" ? "approved" : "changes_requested";
     const review = { decision, findings, nextActions, reviewedBy: actor, reviewedAt: now() };
     this.db.prepare("UPDATE tasks SET status=?,review_json=?,updated_at=? WHERE id=?").run(status, json(review), now(), taskId);
@@ -336,20 +370,37 @@ export class CoordinatorStore {
     return (rows as Array<{ id: string }>).map(row => this.getTask(row.id));
   }
 
-  nextTasks(projectId: string, limit = 5): unknown[] {
+  nextTasks(projectId: string, limit = 5, assignee?: string): unknown[] {
     const candidates = this.listTasks(projectId, ["ready", "changes_requested"]) as Array<Record<string, unknown>>;
-    return candidates.filter(task => (task.dependencies as string[]).every(dep => this.rawTask(dep).status === "approved")).slice(0, limit);
+    return candidates.filter(task => (!assignee || task.assignee === assignee)
+      && (task.dependencies as string[]).every(dep => this.rawTask(dep).status === "approved")).slice(0, limit);
   }
 
   status(projectId: string, staleAfterSeconds = 180): unknown {
     const tasks = this.listTasks(projectId) as Array<Record<string, unknown>>;
     const sessions = this.listSessions(projectId, false, staleAfterSeconds) as Array<Record<string, unknown>>;
+    const lastEvent = this.events(projectId, 1)[0] as Record<string, unknown> | undefined;
     const counts: Record<string, number> = {};
     for (const task of tasks) counts[String(task.status)] = (counts[String(task.status)] ?? 0) + 1;
-    const alerts = tasks.filter(task => task.status === 'claimed' && !this.hasLiveWorker(String(task.id), staleAfterSeconds))
-      .map(task => ({ type: 'stale_claim', taskId: task.id, message: 'Claimed task has no live worker; use project_recover or task_requeue.' }));
+    const alerts = [
+      ...(tasks.length === 0 ? [{ type: "no_tasks", message: "Project has no tasks." }] : []),
+      ...tasks.filter(task => task.status === "blocked")
+        .map(task => ({ type: "blocked_task", taskId: task.id, message: "Task is blocked and requires intervention." })),
+      ...tasks.filter(task => task.status === "claimed" && !this.hasLiveWorker(String(task.id), staleAfterSeconds))
+        .map(task => ({ type: "stale_claim", taskId: task.id, message: "Claimed task has no live worker; use project_recover or task_requeue." })),
+      ...(lastEvent?.action === "runner_failed" ? [{ type: "runner_failed", message: "Background runner stopped after an execution failure.", details: lastEvent.payload }] : [])
+    ];
+    const approved = counts.approved ?? 0;
+    const state = tasks.length > 0 && approved === tasks.length ? "completed"
+      : alerts.length > 0 ? "needs_attention"
+      : (counts.submitted ?? 0) > 0 ? "reviewing"
+      : (counts.claimed ?? 0) > 0 ? "running"
+      : this.nextTasks(projectId, 1).length > 0 ? "ready"
+      : "waiting_dependencies";
     return {
       project: this.getProject(projectId), counts, total: tasks.length,
+      state, done: state === "completed", needsAttention: state === "needs_attention",
+      approvedPercent: tasks.length ? Math.round(approved * 100 / tasks.length) : 0, lastEvent: lastEvent ?? null,
       active: tasks.filter(task => task.status === "claimed").map(task => ({ id: task.id, title: task.title,
         progressPercent: task.progressPercent, progressNote: task.progressNote, heartbeatAt: task.heartbeatAt })),
       nextActionable: this.nextTasks(projectId, 10),
@@ -358,8 +409,14 @@ export class CoordinatorStore {
   }
 
   events(projectId: string, limit = 50): unknown[] {
+    this.getProject(projectId);
     const rows = this.db.prepare("SELECT * FROM events WHERE project_id=? ORDER BY id DESC LIMIT ?").all(projectId, limit) as Array<Record<string, unknown>>;
     return rows.map(row => ({ id: row.id, taskId: row.task_id, actor: row.actor, action: row.action, payload: parse(row.payload_json, {}), createdAt: row.created_at }));
+  }
+
+  recordProjectEvent(projectId: string, actor: string, action: string, payload: unknown): void {
+    this.getProject(projectId);
+    this.event(projectId, null, actor, action, payload);
   }
 
   getTask(taskId: string): unknown {

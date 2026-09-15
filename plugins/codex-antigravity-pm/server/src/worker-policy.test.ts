@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { maxAttempts, retryDelaySeconds, shouldRetry, turnTimeoutMinutes } from "./worker-policy.js";
+import { ANTIGRAVITY_MODEL, antigravityArgs, maxAttempts, retryDelaySeconds, shouldRetry, turnTimeoutMinutes } from "./worker-policy.js";
 
 test("worker retry policy is bounded by default", () => {
   assert.equal(maxAttempts("bad"), 1);
@@ -25,4 +25,12 @@ test("Antigravity turn timeout supports long implementation runs", () => {
   assert.equal(turnTimeoutMinutes("240"), 240);
   assert.equal(turnTimeoutMinutes("9"), 120);
   assert.equal(turnTimeoutMinutes("481"), 120);
+});
+
+test("Antigravity runs the requested high model inside its sandbox", () => {
+  const args = antigravityArgs("work", 120);
+  assert.equal(args[args.indexOf("--model") + 1], ANTIGRAVITY_MODEL);
+  assert.equal(ANTIGRAVITY_MODEL, "gemini-3.8-flash-high");
+  assert.equal(args[args.indexOf("--effort") + 1], "high");
+  assert(args.includes("--sandbox"));
 });

@@ -9,7 +9,7 @@
         "PM_ACTOR": "codex",
         "PM_DB_PATH": "%USERPROFILE%\\.codex-antigravity-pm\\project.db"
       },
-      "startup_timeout_sec": 20,
+      "startup_timeout_sec": 30,
       "tool_timeout_sec": 60,
       "default_tools_approval_mode": "auto"
     }

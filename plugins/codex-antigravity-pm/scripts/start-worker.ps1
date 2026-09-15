@@ -7,6 +7,24 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+function ConvertTo-ProcessArgument([string]$Value) {
+  if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+  $builder = [Text.StringBuilder]::new().Append('"')
+  $backslashes = 0
+  foreach ($character in $Value.ToCharArray()) {
+    if ($character -eq '\') { $backslashes++; continue }
+    if ($character -eq '"') {
+      [void]$builder.Append('\', ($backslashes * 2) + 1).Append('"')
+    } else {
+      if ($backslashes) { [void]$builder.Append('\', $backslashes) }
+      [void]$builder.Append($character)
+    }
+    $backslashes = 0
+  }
+  if ($backslashes) { [void]$builder.Append('\', $backslashes * 2) }
+  return $builder.Append('"').ToString()
+}
+
 $pluginRoot = Split-Path -Parent $PSScriptRoot
 $serverRoot = Join-Path $pluginRoot "server"
 $workerPath = Join-Path $serverRoot "dist\worker.js"
@@ -14,6 +32,7 @@ $stateDir = Join-Path $env:USERPROFILE ".codex-antigravity-pm\runners"
 $statePath = Join-Path $stateDir "$ProjectId.pid"
 $logPath = Join-Path $stateDir "$ProjectId.log"
 if (-not (Test-Path -LiteralPath $workerPath)) { throw "Worker is not built. Run install.cmd first." }
+if ($RepositoryPath -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+)') { throw "RepositoryPath must be absolute: $RepositoryPath" }
 if (-not (Test-Path -LiteralPath $RepositoryPath -PathType Container)) { throw "Repository not found: $RepositoryPath" }
 if (-not (Get-Command agy -ErrorAction SilentlyContinue)) { throw "Antigravity CLI 'agy' was not found." }
 New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
@@ -38,17 +57,17 @@ try {
   }
 
   $nodePath = (Get-Command node -ErrorAction Stop).Source
-  $previousDbPath = $env:PM_DB_PATH
-  $previousTurnTimeout = $env:PM_TURN_TIMEOUT_MINUTES
-  $env:PM_DB_PATH = $DatabasePath
-  $env:PM_TURN_TIMEOUT_MINUTES = "$TurnTimeoutMinutes"
-  try {
-    $process = Start-Process -FilePath $nodePath -ArgumentList @($workerPath, "--project", $ProjectId, "--repo", $RepositoryPath, "--poll", "$PollSeconds", "--log", $logPath) `
-      -WorkingDirectory $serverRoot -WindowStyle Hidden -PassThru
-  } finally {
-    $env:PM_DB_PATH = $previousDbPath
-    $env:PM_TURN_TIMEOUT_MINUTES = $previousTurnTimeout
-  }
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $nodePath
+  $startInfo.WorkingDirectory = $serverRoot
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $processArguments = @($workerPath, "--project", $ProjectId, "--repo", $RepositoryPath, "--poll", "$PollSeconds", "--log", $logPath)
+  $startInfo.Arguments = ($processArguments | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join ' '
+  $startInfo.Environment["PM_DB_PATH"] = $DatabasePath
+  $startInfo.Environment["PM_TURN_TIMEOUT_MINUTES"] = "$TurnTimeoutMinutes"
+  $process = [Diagnostics.Process]::Start($startInfo)
+  if (-not $process) { throw "Failed to start background worker." }
   $state = [pscustomobject]@{ Pid = $process.Id; StartTimeUtc = $process.StartTime.ToUniversalTime().ToString("o") }
   $state | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding utf8
   Write-Host "Background worker started for $ProjectId (PID $($process.Id))."

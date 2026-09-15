@@ -9,7 +9,7 @@ Harness local này biến Codex thành quản lý/reviewer duy nhất và Antigr
 - Antigravity: báo cáo tiến độ trung gian bằng phần trăm, ghi chú và heartbeat.
 - Background runner: tự gọi Antigravity thực thi và Codex review cho đến khi project hoàn thành, với retry có giới hạn để tránh vòng lặp tốn quota.
 - Codex status: xem project, task board, tiến độ, agent session, heartbeat và task chờ review trực tiếp trong Codex.
-- Kiểm soát: dependency gate, trạng thái hữu hạn, bắt buộc bằng chứng, lịch sử sự kiện và SQLite WAL cho hai client chạy đồng thời.
+- Kiểm soát: khóa repository/scope/assignee, dependency gate, trạng thái hữu hạn, bắt buộc bằng chứng, lịch sử sự kiện và SQLite WAL cho hai client chạy đồng thời.
 
 ## Yêu cầu
 
@@ -49,6 +49,7 @@ Sau đó:
 Kết nối ổn định:
 
 - Chỉ dùng một database chung trong `%USERPROFILE%\.codex-antigravity-pm\project.db`; không tạo DB riêng cho Codex và Antigravity.
+- Luôn truyền `repositoryPath` tuyệt đối. Runner từ chối đường dẫn tương đối hoặc đường dẫn khác project ledger.
 - Sau khi sửa config, refresh MCP trong Antigravity và mở task Codex mới để nạp lại plugin.
 - Chạy `doctor.cmd`; nếu MCP không hiện, chạy lại `install.cmd` rồi `configure-antigravity.ps1`.
 - Không chạy hai runner cho cùng một `projectId`; dùng `project_worker_status` trước khi start.
@@ -56,6 +57,8 @@ Kết nối ổn định:
 Nếu log runner có `MCP tool call requires approval, but approval policy is never`, cập nhật plugin từ Git rồi chạy lại `install.cmd`; review runner đã chuyển sang `--approve-for-me` để cho phép MCP mutation như `task_review`.
 
 Nếu log có `UNAUTHENTICATED` hoặc `Eligibility check failed`, chạy `agy` trực tiếp trong terminal để đăng nhập lại và kiểm tra DNS/proxy tới Google Cloud Code Assist. Đây là lỗi xác thực/mạng của Antigravity, không phải lỗi chia task.
+
+Nếu `agy mcp list` báo `invalid character '\ufeff'`, chạy lại `configure-antigravity.ps1`. Script ghi JSON UTF-8 không BOM để Antigravity parse ổn định.
 
 ## Cài thủ công
 
@@ -149,8 +152,10 @@ Gọi task_progress cho task <TASK_ID> với percent 40 và note "Đã hoàn t�
 Theo dõi tiến độ từ Codex:
 
 ```text
-Gọi project_status cho project <PROJECT_ID>. Hiển thị active tasks, progressPercent, progressNote và heartbeatAt.
+Gọi project_wait cho project <PROJECT_ID> với afterEventId là lastEvent.id gần nhất. Lặp lại sau mỗi event hoặc timeout; báo thay đổi quan trọng. Chỉ dừng khi state là completed hoặc needs_attention.
 ```
+
+`project_wait` chờ tối đa 50 giây mỗi lần, thấp hơn MCP `tool_timeout_sec=60`. Cách này giữ kết nối phản hồi nhanh, tránh một tool call treo nhiều giờ.
 
 Theo dõi trực quan:
 
@@ -166,7 +171,7 @@ Khôi phục task bị claim nhưng worker đã chết:
 Gọi project_recover cho project <PROJECT_ID> với staleAfterSeconds 180. Sau đó gọi project_worker_start nếu runner chưa chạy.
 ```
 
-`project_status` hiện trả thêm `workers` và `alerts`. Codex chỉ requeue tự động khi không còn worker heartbeat. Muốn thu hồi thủ công một task, dùng `task_requeue`; `force=true` chỉ dành cho trường hợp đã xác nhận worker cũ cần bị thay thế.
+`project_status` trả `state`, `done`, `needsAttention`, `approvedPercent`, `lastEvent`, `workers` và `alerts`. Codex chỉ requeue tự động khi không còn worker heartbeat. Muốn thu hồi thủ công một task, dùng `task_requeue`; `force=true` chỉ dành cho trường hợp đã xác nhận worker cũ cần bị thay thế.
 
 Trở lại Codex:
 
@@ -184,7 +189,11 @@ Implementation turn mặc định được chờ tối đa 120 phút. Với tác
 
 Worker implementation mặc định dùng `gemini-3.8-flash-high` với reasoning effort `high`.
 
+Antigravity chạy với `--sandbox`. Auto-approval chỉ tránh prompt làm treo background process; server vẫn chặn sai assignee, đường dẫn tuyệt đối, `..`, NTFS alternate data stream, file ngoài `scopeIn`, file thuộc `scopeOut`, verification thiếu/fail và acceptance criterion thiếu/fail. Runner không được commit, push, cài dependency hoặc sửa cấu hình global nếu task không ghi rõ.
+
 Runner dừng tự động khi mọi task được approved. Nếu task bị blocked, runner giữ nguyên dữ liệu và chờ bạn/Codex cập nhật specification.
+
+Nếu `project_wait` trả `needs_attention`, đọc `alerts` và `project_worker_status`. Sửa nguyên nhân trước; dùng `project_recover` cho stale claim hoặc `task_requeue` cho task đã blocked. Lỗi `UNAUTHENTICATED`, DNS, provider eligibility vẫn phụ thuộc dịch vụ ngoài và luôn được dừng/báo rõ, không retry vô hạn.
 
 ### Bảo vệ quota
 

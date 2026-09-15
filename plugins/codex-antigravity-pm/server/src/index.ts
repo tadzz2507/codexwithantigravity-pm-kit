@@ -1,8 +1,8 @@
 import { homedir } from "node:os";
-import { basename, resolve } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { McpServer } from "@modelcontextprotocol/server";
+import { McpServer, type ServerContext } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 import { CoordinatorStore, type Role, type TaskStatus } from "./store.js";
@@ -28,21 +28,35 @@ const scriptPath = (name: string) => fileURLToPath(new URL(`../../scripts/${name
 const runScript = (name: string, parameters: string[]) => execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath(name), ...parameters], { encoding: "utf8", windowsHide: true }).trim();
 
 const text = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
-const guarded = <T extends object>(fn: (input: T) => unknown | Promise<unknown>) => async (input: T) => {
+const guarded = <T extends object>(fn: (input: T, context: ServerContext) => unknown | Promise<unknown>) => async (input: T, context: ServerContext) => {
   let projectId: string | undefined;
   try {
-    const context = input as Record<string, unknown>;
-    projectId = typeof context.projectId === "string" ? context.projectId : undefined;
-    const taskId = typeof context.taskId === "string" ? context.taskId : undefined;
+    const inputContext = input as Record<string, unknown>;
+    projectId = typeof inputContext.projectId === "string" ? inputContext.projectId : undefined;
+    const taskId = typeof inputContext.taskId === "string" ? inputContext.taskId : undefined;
     if (!projectId && taskId) projectId = (store.getTask(taskId) as { projectId: string }).projectId;
     store.heartbeatSession(session.id, { projectId, taskId, status: taskId ? "busy" : "online" });
-    return text(await fn(input));
+    return text(await fn(input, context));
   }
   catch (error) {
     store.heartbeatSession(session.id, { projectId, status: "idle" });
     return { ...text({ error: error instanceof Error ? error.message : String(error) }), isError: true };
   }
 };
+const samePath = (left: string, right: string) => {
+  const normalize = (value: string) => process.platform === "win32" ? resolve(value).toLowerCase() : resolve(value);
+  return normalize(left) === normalize(right);
+};
+const absoluteRepositoryPath = (value: string) => {
+  if (!isAbsolute(value)) throw new Error("repositoryPath must be absolute");
+  return resolve(value);
+};
+const wait = (milliseconds: number, signal: AbortSignal) => new Promise<void>((resolveWait, rejectWait) => {
+  if (signal.aborted) { rejectWait(new Error("project_wait cancelled")); return; }
+  const onAbort = () => { clearTimeout(timer); rejectWait(new Error("project_wait cancelled")); };
+  const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolveWait(); }, milliseconds);
+  signal.addEventListener("abort", onAbort, { once: true });
+});
 
 function createServer(): McpServer {
   const server = new McpServer(
@@ -68,6 +82,20 @@ function createServer(): McpServer {
   server.registerTool("project_status", { description: "Summarize delivery status, workers, stale claims, and dependency-free work", inputSchema: z.object({
     projectId: z.string(), staleAfterSeconds: z.number().int().min(30).max(3600).default(180)
   }), annotations: { readOnlyHint: true } }, guarded(({ projectId, staleAfterSeconds }) => store.status(projectId, staleAfterSeconds)));
+  server.registerTool("project_wait", { description: "Wait briefly for project progress, completion, or required intervention", inputSchema: z.object({
+    projectId: z.string(), afterEventId: z.number().int().nonnegative().optional(), waitSeconds: z.number().int().min(1).max(50).default(30),
+    staleAfterSeconds: z.number().int().min(30).max(3600).default(180)
+  }), annotations: { readOnlyHint: true } }, guarded(async ({ projectId, afterEventId, waitSeconds, staleAfterSeconds }, context) => {
+    const deadline = Date.now() + waitSeconds * 1000;
+    while (true) {
+      const status = store.status(projectId, staleAfterSeconds) as { state: string; lastEvent?: { id?: number } | null };
+      const latestEventId = Number(status.lastEvent?.id ?? 0);
+      if (status.state === "completed" || status.state === "needs_attention") return { reason: status.state, status };
+      if (afterEventId === undefined || latestEventId > afterEventId) return { reason: "event", status };
+      if (Date.now() >= deadline) return { reason: "timeout", status };
+      await wait(Math.min(500, deadline - Date.now()), context.mcpReq.signal);
+    }
+  }));
   server.registerTool("event_list", { description: "Read the audit trail for a project", inputSchema: z.object({ projectId: z.string(), limit: z.number().int().min(1).max(200).default(50) }), annotations: { readOnlyHint: true } },
     guarded(({ projectId, limit }) => store.events(projectId, limit)));
 
@@ -80,9 +108,10 @@ function createServer(): McpServer {
       pollSeconds: z.number().int().min(5).max(300).default(20),
       turnTimeoutMinutes: z.number().int().min(10).max(480).default(120)
     }) }, guarded(input => {
+      const repo = absoluteRepositoryPath(input.repositoryPath);
       const project = store.createProject({
         name: input.name ?? `Autonomous run: ${basename(input.repositoryPath)}`,
-        outcome: input.goal, repositoryPath: input.repositoryPath,
+        outcome: input.goal, repositoryPath: repo,
         constraints: [...input.constraints, "Antigravity may modify only scopeIn and must not touch scopeOut."],
         definitionOfDone: input.acceptanceCriteria
       }, actor) as { id: string; repositoryPath?: string };
@@ -92,13 +121,13 @@ function createServer(): McpServer {
         scopeIn: input.scopeIn, scopeOut: input.scopeOut, acceptanceCriteria: input.acceptanceCriteria,
         verificationCommands: input.verificationCommands, priority: input.priority, assignee: "antigravity"
       }, actor) as { id: string };
-      const message = runScript("start-worker.ps1", ["-ProjectId", project.id, "-RepositoryPath", input.repositoryPath, "-DatabasePath", dbPath, "-PollSeconds", String(input.pollSeconds), "-TurnTimeoutMinutes", String(input.turnTimeoutMinutes)]);
-      return { projectId: project.id, taskId: task.id, message, mode: "autonomous" };
+      const message = runScript("start-worker.ps1", ["-ProjectId", project.id, "-RepositoryPath", repo, "-DatabasePath", dbPath, "-PollSeconds", String(input.pollSeconds), "-TurnTimeoutMinutes", String(input.turnTimeoutMinutes)]);
+      return { projectId: project.id, taskId: task.id, message, mode: "autonomous", next: "Call project_wait repeatedly until completed or needs_attention." };
     }));
     server.registerTool("project_init", { description: "Create a managed project", inputSchema: z.object({
       name: z.string().min(1), outcome: z.string().min(1), repositoryPath: z.string().optional(),
       constraints: z.array(z.string()).default([]), definitionOfDone: z.array(z.string().min(1)).min(1)
-    }) }, guarded(input => store.createProject(input, actor)));
+    }) }, guarded(input => store.createProject({ ...input, repositoryPath: input.repositoryPath ? absoluteRepositoryPath(input.repositoryPath) : undefined }, actor)));
     server.registerTool("task_create", { description: "Create a detailed implementation task for Antigravity", inputSchema: z.object({
       projectId: z.string(), title: z.string().min(1), objective: z.string().min(1), context: z.string().default(""),
       scopeIn: z.array(z.string().min(1)).min(1), scopeOut: z.array(z.string()).default([]),
@@ -129,7 +158,8 @@ function createServer(): McpServer {
       const project = store.getProject(projectId) as { repositoryPath?: string };
       const repo = repositoryPath ?? project.repositoryPath;
       if (!repo) throw new Error("Project has no repositoryPath; provide repositoryPath");
-      return { message: runScript("start-worker.ps1", ["-ProjectId", projectId, "-RepositoryPath", repo, "-DatabasePath", dbPath, "-PollSeconds", String(pollSeconds), "-TurnTimeoutMinutes", String(turnTimeoutMinutes)]) };
+      if (project.repositoryPath && !samePath(repo, project.repositoryPath)) throw new Error("repositoryPath must match the project repositoryPath");
+      return { message: runScript("start-worker.ps1", ["-ProjectId", projectId, "-RepositoryPath", absoluteRepositoryPath(repo), "-DatabasePath", dbPath, "-PollSeconds", String(pollSeconds), "-TurnTimeoutMinutes", String(turnTimeoutMinutes)]) };
     }));
     server.registerTool("project_worker_status", { description: "Read background worker process status and recent log", inputSchema: z.object({ projectId: z.string() }), annotations: { readOnlyHint: true } },
       guarded(({ projectId }) => ({ message: runScript("worker-status.ps1", ["-ProjectId", projectId]) })));
@@ -139,7 +169,7 @@ function createServer(): McpServer {
 
   if (role === "worker") {
     server.registerTool("task_next", { description: "List dependency-free tasks available to Antigravity", inputSchema: z.object({ projectId: z.string(), limit: z.number().int().min(1).max(20).default(5) }), annotations: { readOnlyHint: true } },
-      guarded(({ projectId, limit }) => store.nextTasks(projectId, limit)));
+      guarded(({ projectId, limit }) => store.nextTasks(projectId, limit, actor)));
     server.registerTool("task_claim", { description: "Claim a ready task before implementation", inputSchema: z.object({ taskId: z.string() }) },
       guarded(({ taskId }) => {
         const task = store.claimTask(taskId, actor) as { projectId: string };
