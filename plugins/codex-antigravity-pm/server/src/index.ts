@@ -77,7 +77,8 @@ function createServer(): McpServer {
       scopeIn: z.array(z.string().min(1)).min(1), scopeOut: z.array(z.string()).default([]),
       acceptanceCriteria: z.array(z.string().min(1)).min(1), verificationCommands: z.array(z.string().min(1)).min(1),
       constraints: z.array(z.string()).default([]), priority: z.number().int().min(1).max(100).default(50),
-      pollSeconds: z.number().int().min(5).max(300).default(20)
+      pollSeconds: z.number().int().min(5).max(300).default(20),
+      turnTimeoutMinutes: z.number().int().min(10).max(480).default(120)
     }) }, guarded(input => {
       const project = store.createProject({
         name: input.name ?? `Autonomous run: ${basename(input.repositoryPath)}`,
@@ -91,7 +92,7 @@ function createServer(): McpServer {
         scopeIn: input.scopeIn, scopeOut: input.scopeOut, acceptanceCriteria: input.acceptanceCriteria,
         verificationCommands: input.verificationCommands, priority: input.priority, assignee: "antigravity"
       }, actor) as { id: string };
-      const message = runScript("start-worker.ps1", ["-ProjectId", project.id, "-RepositoryPath", input.repositoryPath, "-DatabasePath", dbPath, "-PollSeconds", String(input.pollSeconds)]);
+      const message = runScript("start-worker.ps1", ["-ProjectId", project.id, "-RepositoryPath", input.repositoryPath, "-DatabasePath", dbPath, "-PollSeconds", String(input.pollSeconds), "-TurnTimeoutMinutes", String(input.turnTimeoutMinutes)]);
       return { projectId: project.id, taskId: task.id, message, mode: "autonomous" };
     }));
     server.registerTool("project_init", { description: "Create a managed project", inputSchema: z.object({
@@ -122,12 +123,13 @@ function createServer(): McpServer {
       projectId: z.string(), staleAfterSeconds: z.number().int().min(30).max(3600).default(180)
     }) }, guarded(({ projectId, staleAfterSeconds }) => store.recoverProject(projectId, staleAfterSeconds, actor)));
     server.registerTool("project_worker_start", { description: "Start Antigravity background execution and Codex review loop for a project", inputSchema: z.object({
-      projectId: z.string(), repositoryPath: z.string().optional(), pollSeconds: z.number().int().min(5).max(300).default(20)
-    }) }, guarded(({ projectId, repositoryPath, pollSeconds }) => {
+      projectId: z.string(), repositoryPath: z.string().optional(), pollSeconds: z.number().int().min(5).max(300).default(20),
+      turnTimeoutMinutes: z.number().int().min(10).max(480).default(120)
+    }) }, guarded(({ projectId, repositoryPath, pollSeconds, turnTimeoutMinutes }) => {
       const project = store.getProject(projectId) as { repositoryPath?: string };
       const repo = repositoryPath ?? project.repositoryPath;
       if (!repo) throw new Error("Project has no repositoryPath; provide repositoryPath");
-      return { message: runScript("start-worker.ps1", ["-ProjectId", projectId, "-RepositoryPath", repo, "-DatabasePath", dbPath, "-PollSeconds", String(pollSeconds)]) };
+      return { message: runScript("start-worker.ps1", ["-ProjectId", projectId, "-RepositoryPath", repo, "-DatabasePath", dbPath, "-PollSeconds", String(pollSeconds), "-TurnTimeoutMinutes", String(turnTimeoutMinutes)]) };
     }));
     server.registerTool("project_worker_status", { description: "Read background worker process status and recent log", inputSchema: z.object({ projectId: z.string() }), annotations: { readOnlyHint: true } },
       guarded(({ projectId }) => ({ message: runScript("worker-status.ps1", ["-ProjectId", projectId]) })));

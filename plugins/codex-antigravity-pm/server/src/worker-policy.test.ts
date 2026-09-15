@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { maxAttempts, retryDelaySeconds, shouldRetry } from "./worker-policy.js";
+import { maxAttempts, retryDelaySeconds, shouldRetry, turnTimeoutMinutes } from "./worker-policy.js";
 
 test("worker retry policy is bounded by default", () => {
   assert.equal(maxAttempts("bad"), 1);
@@ -18,4 +18,11 @@ test("review runner keeps MCP mutations approvable", () => {
   const args = ["exec", "--ephemeral", "--approve-for-me", "-s", "workspace-write"];
   assert(args.includes("--approve-for-me"));
   assert(!args.includes('approval_policy="never"'));
+});
+
+test("Antigravity turn timeout supports long implementation runs", () => {
+  assert.equal(turnTimeoutMinutes(), 120);
+  assert.equal(turnTimeoutMinutes("240"), 240);
+  assert.equal(turnTimeoutMinutes("9"), 120);
+  assert.equal(turnTimeoutMinutes("481"), 120);
 });

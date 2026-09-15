@@ -2,7 +2,8 @@ param(
   [Parameter(Mandatory = $true)][string]$ProjectId,
   [Parameter(Mandatory = $true)][string]$RepositoryPath,
   [string]$DatabasePath = "$env:USERPROFILE\.codex-antigravity-pm\project.db",
-  [int]$PollSeconds = 20
+  [int]$PollSeconds = 20,
+  [ValidateRange(10, 480)][int]$TurnTimeoutMinutes = 120
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,11 +39,16 @@ try {
 
   $nodePath = (Get-Command node -ErrorAction Stop).Source
   $previousDbPath = $env:PM_DB_PATH
+  $previousTurnTimeout = $env:PM_TURN_TIMEOUT_MINUTES
   $env:PM_DB_PATH = $DatabasePath
+  $env:PM_TURN_TIMEOUT_MINUTES = "$TurnTimeoutMinutes"
   try {
     $process = Start-Process -FilePath $nodePath -ArgumentList @($workerPath, "--project", $ProjectId, "--repo", $RepositoryPath, "--poll", "$PollSeconds", "--log", $logPath) `
       -WorkingDirectory $serverRoot -WindowStyle Hidden -PassThru
-  } finally { $env:PM_DB_PATH = $previousDbPath }
+  } finally {
+    $env:PM_DB_PATH = $previousDbPath
+    $env:PM_TURN_TIMEOUT_MINUTES = $previousTurnTimeout
+  }
   $state = [pscustomobject]@{ Pid = $process.Id; StartTimeUtc = $process.StartTime.ToUniversalTime().ToString("o") }
   $state | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding utf8
   Write-Host "Background worker started for $ProjectId (PID $($process.Id))."

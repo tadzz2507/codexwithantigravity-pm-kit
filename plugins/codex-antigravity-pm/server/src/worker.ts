@@ -3,7 +3,7 @@ import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { CoordinatorStore } from "./store.js";
-import { maxAttempts, retryDelaySeconds, shouldRetry } from "./worker-policy.js";
+import { maxAttempts, retryDelaySeconds, shouldRetry, turnTimeoutMinutes } from "./worker-policy.js";
 
 const children = new Set<ChildProcess>();
 const exec = (file: string, fileArgs: string[], options: ExecFileOptionsWithStringEncoding) =>
@@ -24,6 +24,7 @@ const pollSeconds = Number(value("--poll") ?? 20);
 const dbPath = resolve((process.env.PM_DB_PATH ?? "~/.codex-antigravity-pm/project.db").replace(/^~(?=[/\\]|$)/, homedir()));
 const logPath = value("--log");
 const attemptLimit = maxAttempts();
+const turnTimeout = turnTimeoutMinutes();
 if (!projectArg || !repositoryArg) throw new Error("Usage: worker.js --project <id> --repo <path> [--poll 20] [--log path]");
 const projectId: string = projectArg;
 const repositoryPath: string = repositoryArg;
@@ -82,8 +83,8 @@ async function runBounded(kind: "task" | "review", id: string, run: () => Promis
 async function runTask(): Promise<void> {
   const prompt = `Use the codex-antigravity-pm MCP for project ${projectId}. If a task is already claimed by antigravity, continue that exact task; otherwise call task_next and claim exactly one highest-priority task. Read the full specification before editing. You have full authority inside scopeIn, but may not modify scopeOut or any file outside scopeIn. Do not create tasks, change task scope, install dependencies, or perform unrelated refactors. Call task_progress at meaningful milestones. Run every verification command. Finish by calling task_submit with changed files, tests, risks, and evidence for every acceptance criterion. If work cannot continue, call task_block with the exact reason and needs. Do not start a second task in this run.`;
   write("Starting Antigravity task run");
-  const result = await exec("agy", ["--mode", "accept-edits", "--dangerously-skip-permissions", "--model", "gemini-3.8-flash-low", "--effort", "low", "--print-timeout", "30m", "--output-format", "text", `--print=${prompt}`], {
-    cwd: repositoryPath, windowsHide: true, timeout: 31 * 60 * 1000, maxBuffer: 10 * 1024 * 1024, encoding: "utf8"
+  const result = await exec("agy", ["--mode", "accept-edits", "--dangerously-skip-permissions", "--model", "gemini-3.8-flash-low", "--effort", "low", "--print-timeout", `${turnTimeout}m`, "--output-format", "text", "--print", prompt], {
+    cwd: repositoryPath, windowsHide: true, timeout: (turnTimeout * 60 + 1) * 1000, maxBuffer: 10 * 1024 * 1024, encoding: "utf8"
   });
   if (result.stdout.trim()) write(result.stdout.trim());
   if (result.stderr.trim()) write(`stderr: ${result.stderr.trim()}`);

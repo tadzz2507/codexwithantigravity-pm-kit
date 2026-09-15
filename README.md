@@ -178,6 +178,8 @@ Chạy toàn bộ project nền từ Codex:
 Gọi project_worker_start cho project <PROJECT_ID>. Dùng repositoryPath của project và pollSeconds 20. Sau đó báo trạng thái worker.
 ```
 
+Implementation turn mặc định được chờ tối đa 120 phút. Với tác vụ dài, truyền `turnTimeoutMinutes` từ 10 đến 480 khi gọi `project_run` hoặc `project_worker_start`. Timeout chỉ giới hạn một lượt Antigravity; không yêu cầu chia nhỏ task.
+
 Runner dừng tự động khi mọi task được approved. Nếu task bị blocked, runner giữ nguyên dữ liệu và chờ bạn/Codex cập nhật specification.
 
 ### Bảo vệ quota
