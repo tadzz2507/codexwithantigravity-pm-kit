@@ -1,0 +1,20 @@
+{
+  "name": "codex-antigravity-local",
+  "interface": {
+    "displayName": "Codex Antigravity Local"
+  },
+  "plugins": [
+    {
+      "name": "codex-antigravity-pm",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex-antigravity-pm"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

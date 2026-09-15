@@ -1,0 +1,33 @@
+{
+  "name": "codex-antigravity-pm",
+  "version": "0.1.1+codex.20260914173704",
+  "description": "Local autonomous project-control MCP for Codex and Google Antigravity",
+  "author": {
+    "name": "Local developer"
+  },
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "antigravity",
+    "mcp",
+    "project-management"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex \u2192 Antigravity PM",
+    "shortDescription": "Delegate tasks and verify Antigravity output",
+    "longDescription": "Lets Codex plan and review while Antigravity executes tasks in a local background loop, with evidence gates and progress stored in SQLite.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Plan this project and delegate tasks to Antigravity.",
+      "Review all submitted Antigravity tasks.",
+      "Show project status and blocked work."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

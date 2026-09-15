@@ -1,0 +1,9 @@
+plugins/codex-antigravity-pm/server/node_modules/
+plugins/codex-antigravity-pm/server/dist/
+*.db
+*.db-shm
+*.db-wal
+*.log
+.e2e-harness-test/.git/
+.e2e-harness-test/
+.codex-antigravity-pm/
