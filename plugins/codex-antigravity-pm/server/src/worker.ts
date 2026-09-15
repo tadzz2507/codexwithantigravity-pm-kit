@@ -59,7 +59,7 @@ async function runBounded(kind: "task" | "review", id: string, run: () => Promis
     if (!shouldRetry(attempt, attemptLimit)) {
       if (kind === "task") {
         const task = store.getTask(id) as { status: string; claimedBy?: string | null };
-        if (task.status === "claimed") {
+        if (["ready", "claimed", "changes_requested"].includes(task.status)) {
           store.blockTask(id, `${kind} stopped after ${attempt} attempt(s) to prevent quota-consuming loops`, ["Inspect the worker log, fix the cause, then requeue the task manually."], task.claimedBy ?? "antigravity");
           write(`${kind} ${id} blocked after ${attempt} attempt(s); manual requeue required`);
         } else {
@@ -92,7 +92,7 @@ async function runTask(): Promise<void> {
 async function runReview(): Promise<void> {
   const prompt = `Use antigravity_pm as the authoritative ledger. Review every submitted task for project ${projectId}. Inspect the actual repository changes and run or verify the specified commands. Approve only when every acceptance criterion and test passes. Otherwise call task_review with request_changes, precise findings, and next actions. Do not edit implementation files and do not create unrelated tasks. After reviews, call project_status and report the remaining work.`;
   write("Starting Codex review run");
-  const result = await exec("codex", ["exec", "--ephemeral", "--skip-git-repo-check", "-s", "workspace-write", "-c", 'approval_policy="never"', "-C", repositoryPath, prompt], {
+  const result = await exec("codex", ["exec", "--ephemeral", "--skip-git-repo-check", "--approve-for-me", "-s", "workspace-write", "-C", repositoryPath, prompt], {
     cwd: repositoryPath, windowsHide: true, timeout: 31 * 60 * 1000, maxBuffer: 10 * 1024 * 1024, encoding: "utf8"
   });
   if (result.stdout.trim()) write(result.stdout.trim());

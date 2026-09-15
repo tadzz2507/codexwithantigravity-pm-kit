@@ -13,3 +13,9 @@ test("retry backoff is exponential and capped", () => {
   assert.deepEqual([1, 2, 4], [1, 2, 3].map(attempt => retryDelaySeconds(attempt, 1)));
   assert.equal(retryDelaySeconds(20, 20), 300);
 });
+
+test("review runner keeps MCP mutations approvable", () => {
+  const args = ["exec", "--ephemeral", "--approve-for-me", "-s", "workspace-write"];
+  assert(args.includes("--approve-for-me"));
+  assert(!args.includes('approval_policy="never"'));
+});

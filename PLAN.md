@@ -19,6 +19,7 @@
 2. Ghi `lastError`, số lần retry và trạng thái runner vào database.
 3. Dọn session stale theo policy; phân biệt `ended`, `stale`, `busy` rõ hơn.
 4. Kiểm tra repository path đã tồn tại trước khi tạo project trong `project_run`.
+5. Review subprocess dùng `--approve-for-me`; không dùng `approval_policy="never"` vì MCP mutation cần approval.
 
 ## P2 - chức năng
 

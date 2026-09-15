@@ -51,6 +51,10 @@ Kết nối ổn định:
 - Chạy `doctor.cmd`; nếu MCP không hiện, chạy lại `install.cmd` rồi `configure-antigravity.ps1`.
 - Không chạy hai runner cho cùng một `projectId`; dùng `project_worker_status` trước khi start.
 
+Nếu log runner có `MCP tool call requires approval, but approval policy is never`, cập nhật plugin từ Git rồi chạy lại `install.cmd`; review runner đã chuyển sang `--approve-for-me` để cho phép MCP mutation như `task_review`.
+
+Nếu log có `UNAUTHENTICATED` hoặc `Eligibility check failed`, chạy `agy` trực tiếp trong terminal để đăng nhập lại và kiểm tra DNS/proxy tới Google Cloud Code Assist. Đây là lỗi xác thực/mạng của Antigravity, không phải lỗi chia task.
+
 ## Cài thủ công
 
 ### 1. Build server
