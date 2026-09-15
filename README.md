@@ -44,6 +44,13 @@ Sau đó:
 2. Trong Antigravity: Agent panel → `...` → MCP Servers → Manage MCP Servers → Refresh.
 3. Với Antigravity CLI, chạy `agy`, sau đó `/mcp`.
 
+Kết nối ổn định:
+
+- Chỉ dùng một database chung trong `%USERPROFILE%\\.codex-antigravity-pm\\project.db`; không tạo DB riêng cho Codex và Antigravity.
+- Sau khi sửa config, refresh MCP trong Antigravity và mở task Codex mới để nạp lại plugin.
+- Chạy `doctor.cmd`; nếu MCP không hiện, chạy lại `install.cmd` rồi `configure-antigravity.ps1`.
+- Không chạy hai runner cho cùng một `projectId`; dùng `project_worker_status` trước khi start.
+
 ## Cài thủ công
 
 ### 1. Build server

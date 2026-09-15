@@ -29,15 +29,19 @@ const runScript = (name: string, parameters: string[]) => execFileSync("powershe
 
 const text = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
 const guarded = <T extends object>(fn: (input: T) => unknown | Promise<unknown>) => async (input: T) => {
+  let projectId: string | undefined;
   try {
     const context = input as Record<string, unknown>;
-    let projectId = typeof context.projectId === "string" ? context.projectId : undefined;
+    projectId = typeof context.projectId === "string" ? context.projectId : undefined;
     const taskId = typeof context.taskId === "string" ? context.taskId : undefined;
     if (!projectId && taskId) projectId = (store.getTask(taskId) as { projectId: string }).projectId;
     store.heartbeatSession(session.id, { projectId, taskId, status: taskId ? "busy" : "online" });
     return text(await fn(input));
   }
-  catch (error) { return { ...text({ error: error instanceof Error ? error.message : String(error) }), isError: true }; }
+  catch (error) {
+    store.heartbeatSession(session.id, { projectId, status: "idle" });
+    return { ...text({ error: error instanceof Error ? error.message : String(error) }), isError: true };
+  }
 };
 
 function createServer(): McpServer {
@@ -167,8 +171,23 @@ function createServer(): McpServer {
 
 const handle = serveStdio(createServer);
 console.error(`codex-antigravity-pm running as ${role}; database: ${dbPath}`);
-for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => {
+let shuttingDown = false;
+const shutdown = async (): Promise<void> => {
+  if (shuttingDown) return;
+  shuttingDown = true;
   clearInterval(heartbeat);
-  store.endSession(session.id);
-  void handle.close();
+  try { store.endSession(session.id); } finally {
+    try { await handle.close(); } finally { store.close(); }
+  }
+};
+process.stdin.once("close", () => { void shutdown(); });
+process.once("exit", () => {
+  if (!shuttingDown) {
+    clearInterval(heartbeat);
+    try { store.endSession(session.id); } catch { }
+  }
+  try { store.close(); } catch { }
+});
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => {
+  void shutdown().finally(() => process.exit(0));
 });

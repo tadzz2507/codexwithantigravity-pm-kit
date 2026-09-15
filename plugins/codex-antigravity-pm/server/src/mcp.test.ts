@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { CoordinatorStore } from "./store.js";
 
 const serverPath = fileURLToPath(new URL("./index.js", import.meta.url));
 const cleanEnv = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
@@ -44,6 +45,30 @@ test("MCP exposes role-specific tools", async () => {
     assert(worker.includes("task_submit"));
     assert(worker.includes("task_progress"));
     assert(!worker.includes("project_init"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("MCP client disconnect ends its session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pm-mcp-disconnect-"));
+  const dbPath = join(dir, "test.db");
+  const client = new Client({ name: "disconnect-test", version: "1.0.0" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [serverPath],
+    env: { ...cleanEnv, PM_ROLE: "manager", PM_ACTOR: "test", PM_DB_PATH: dbPath }
+  });
+  try {
+    await client.connect(transport);
+    await client.close();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const store = new CoordinatorStore(dbPath);
+    try {
+      const sessions = store.listSessions(undefined, true) as Array<Record<string, unknown>>;
+      assert.equal(sessions.length, 1);
+      assert.equal(sessions[0].status, "ended");
+    } finally { store.close(); }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -19,6 +19,7 @@ function Check([string]$Name, [scriptblock]$Test, [string]$Fix) {
 Check "Node" { $version = node --version; if ([version]($version.TrimStart('v')) -lt [version]'22.5.0') { throw "$version; need 22.5+" }; $version } "Install Node.js 22.5+."
 Check "MCP server" { if (-not (Test-Path -LiteralPath $serverPath)) { throw "missing dist/index.js" }; $serverPath } "Run install.cmd."
 Check "Antigravity config" { $config = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json; if (-not $config.mcpServers.'codex-antigravity-pm') { throw "server entry missing" }; $configPath } "Run configure-antigravity.ps1."
+Check "MCP executable" { $entry = (Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json).mcpServers.'codex-antigravity-pm'; if (-not (Test-Path -LiteralPath $entry.command)) { throw "node executable missing: $($entry.command)" }; $entry.args | ForEach-Object { if (-not (Test-Path -LiteralPath $_)) { throw "server entry missing: $_" } }; $entry.command } "Run configure-antigravity.ps1 after building."
 Check "Database" { if (-not (Test-Path -LiteralPath $dbPath)) { throw "database not created yet" }; (Get-Item -LiteralPath $dbPath).Length.ToString() + " bytes" } "Open Codex or Antigravity once."
 if ($failed) { exit 1 }
 Write-Host "Harness healthy." -ForegroundColor Cyan

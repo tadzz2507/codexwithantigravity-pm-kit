@@ -35,6 +35,12 @@ $entry = [pscustomobject]@{
   default_tools_approval_mode = "auto"
 }
 $config.mcpServers | Add-Member -Force -NotePropertyName "codex-antigravity-pm" -NotePropertyValue $entry
-$config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $configPath -Encoding utf8
+$tempConfigPath = "$configPath.tmp-$([guid]::NewGuid().ToString('N'))"
+try {
+  $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $tempConfigPath -Encoding utf8
+  Move-Item -Force -LiteralPath $tempConfigPath -Destination $configPath
+} finally {
+  if (Test-Path -LiteralPath $tempConfigPath) { Remove-Item -Force -LiteralPath $tempConfigPath }
+}
 Write-Host "Antigravity MCP configured at $configPath"
 Write-Host "Refresh Installed MCP Servers in Antigravity, then use /mcp to verify."
