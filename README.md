@@ -38,6 +38,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Script cài dependency, build, chạy test, cài plugin Codex, sao lưu rồi cập nhật MCP của Antigravity. Database mặc định là `%USERPROFILE%\.codex-antigravity-pm\project.db`.
 
+Nếu Codex Desktop đang khóa plugin cache, installer tự cấu hình `antigravity_pm` trực tiếp tới `server/dist/index.js`. Server mới vẫn hoạt động; có thể cài lại plugin sau khi đóng Codex để cập nhật skill/package cache.
+
 Sau đó:
 
 1. Khởi động lại Codex để plugin và skill được nạp trong task mới.
