@@ -83,7 +83,7 @@ async function runBounded(kind: "task" | "review", id: string, run: () => Promis
 async function runTask(): Promise<void> {
   const prompt = `Use the codex-antigravity-pm MCP for project ${projectId}. If a task is already claimed by antigravity, continue that exact task; otherwise call task_next and claim exactly one highest-priority task. Read the full specification before editing. You have full authority inside scopeIn, but may not modify scopeOut or any file outside scopeIn. Do not create tasks, change task scope, install dependencies, or perform unrelated refactors. Call task_progress at meaningful milestones. Run every verification command. Finish by calling task_submit with changed files, tests, risks, and evidence for every acceptance criterion. If work cannot continue, call task_block with the exact reason and needs. Do not start a second task in this run.`;
   write("Starting Antigravity task run");
-  const result = await exec("agy", ["--mode", "accept-edits", "--dangerously-skip-permissions", "--model", "gemini-3.8-flash-low", "--effort", "low", "--print-timeout", `${turnTimeout}m`, "--output-format", "text", "--print", prompt], {
+  const result = await exec("agy", ["--mode", "accept-edits", "--dangerously-skip-permissions", "--model", "gemini-3.8-flash-high", "--effort", "high", "--print-timeout", `${turnTimeout}m`, "--output-format", "text", "--print", prompt], {
     cwd: repositoryPath, windowsHide: true, timeout: (turnTimeout * 60 + 1) * 1000, maxBuffer: 10 * 1024 * 1024, encoding: "utf8"
   });
   if (result.stdout.trim()) write(result.stdout.trim());

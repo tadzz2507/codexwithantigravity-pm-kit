@@ -182,6 +182,8 @@ Gọi project_worker_start cho project <PROJECT_ID>. Dùng repositoryPath của 
 
 Implementation turn mặc định được chờ tối đa 120 phút. Với tác vụ dài, truyền `turnTimeoutMinutes` từ 10 đến 480 khi gọi `project_run` hoặc `project_worker_start`. Timeout chỉ giới hạn một lượt Antigravity; không yêu cầu chia nhỏ task.
 
+Worker implementation mặc định dùng `gemini-3.8-flash-high` với reasoning effort `high`.
+
 Runner dừng tự động khi mọi task được approved. Nếu task bị blocked, runner giữ nguyên dữ liệu và chờ bạn/Codex cập nhật specification.
 
 ### Bảo vệ quota
